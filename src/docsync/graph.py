@@ -1,6 +1,6 @@
 """The DocSync pipeline as a LangGraph state machine.
 
-    collect -> summarize -> modules -> api -> classify --structural--> architecture -> changelog -> END
+    collect -> summarize -> modules -> api -> classify --structural--> architecture -> changelog -> notify -> END
                                                        \\--minor-------------------->/
 """
 
@@ -18,6 +18,7 @@ from . import render
 from .analysis import looks_like_routes, module_of
 from .chains import Chains
 from .config import Settings, is_manifest_file
+from .notify import Notifier, summary_message
 from .schemas import ArchitectureDoc, ChangelogEntry
 from .sinks import API, ARCHITECTURE, CHANGELOG, MODULES, DocSink
 from .sources import ChangeSet, CodeSource, select_manifests, select_source_files
@@ -36,6 +37,9 @@ class RunState(TypedDict, total=False):
     removed: list[str]
     affected_modules: list[str]
     new_or_gone_modules: list[str]
+    updated_modules: list[str]
+    removed_modules: list[str]
+    endpoint_count: int
     change_kind: Literal["minor", "structural"]
     change_reason: str
     architecture: ArchitectureDoc
@@ -50,6 +54,8 @@ class Deps:
     chains: Chains
     cache: State
     settings: Settings
+    notifier: Notifier | None = None
+    docs_url: str | None = None
 
 
 def build_graph(deps: Deps):
@@ -110,12 +116,14 @@ def build_graph(deps: Deps):
         """Chain 2: reduce file summaries into one page per affected module."""
         by_module = _group(cache)
         written: list[str] = []
+        removed: list[str] = []
 
         async def one(name: str) -> None:
             async with sem:
                 if name not in by_module:
                     cache.modules.pop(name, None)
                     await deps.sink.remove(name, parent=MODULES)
+                    removed.append(name)
                     return
                 doc = await deps.chains.write_module(name, by_module[name])
                 cache.modules[name] = doc
@@ -123,13 +131,16 @@ def build_graph(deps: Deps):
                 written.append(name)
 
         await asyncio.gather(*(one(m) for m in state["affected_modules"]))
-        return {"events": [f"module pages updated: {', '.join(sorted(written)) or 'none'}"]}
+        return {
+            "updated_modules": sorted(written), "removed_modules": sorted(removed),
+            "events": [f"module pages updated: {', '.join(sorted(written)) or 'none'}"],
+        }
 
     async def api(state: RunState) -> RunState:
         endpoints = [e for rec in cache.files.values() for e in rec.endpoints]
         endpoints.sort(key=lambda e: (e.path, e.method))
         await deps.sink.publish(API, render.api_page(endpoints))
-        return {"events": [f"API reference: {len(endpoints)} endpoints"]}
+        return {"endpoint_count": len(endpoints), "events": [f"API reference: {len(endpoints)} endpoints"]}
 
     async def classify(state: RunState) -> RunState:
         """Chain 4: route the run. Cheap rules first, the LLM only when rules can't decide."""
@@ -168,13 +179,24 @@ def build_graph(deps: Deps):
         await deps.sink.prepend(CHANGELOG, render.changelog_entry(entry, state.get("shas", [])))
         return {"changelog": entry, "events": [f"changelog: {entry.title}"]}
 
+    async def notify(state: RunState) -> RunState:
+        """Post a run summary to the team channel. A failed post never fails the run."""
+        if deps.notifier is None:
+            return {}
+        try:
+            await deps.notifier.send(summary_message(state, deps.source.name, deps.docs_url))
+            return {"events": ["Slack: summary posted"]}
+        except Exception as err:
+            log.warning("could not post to Slack: %s", err)
+            return {"events": [f"Slack: post failed ({err})"]}
+
     def route(state: RunState) -> str:
         return "architecture" if state["change_kind"] == "structural" else "changelog"
 
     graph = StateGraph(RunState)
     for name, fn in [
         ("collect", collect), ("summarize", summarize), ("modules", modules), ("api", api),
-        ("classify", classify), ("architecture", architecture), ("changelog", changelog),
+        ("classify", classify), ("architecture", architecture), ("changelog", changelog), ("notify", notify),
     ]:
         graph.add_node(name, fn)
     graph.add_edge(START, "collect")
@@ -184,7 +206,8 @@ def build_graph(deps: Deps):
     graph.add_edge("api", "classify")
     graph.add_conditional_edges("classify", route, {"architecture": "architecture", "changelog": "changelog"})
     graph.add_edge("architecture", "changelog")
-    graph.add_edge("changelog", END)
+    graph.add_edge("changelog", "notify")
+    graph.add_edge("notify", END)
     return graph.compile()
 
 

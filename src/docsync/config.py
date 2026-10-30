@@ -56,11 +56,19 @@ class Settings:
     notion_token: str = ""
     notion_root_page_id: str = ""
 
+    # Slack (optional): post a summary after each run
+    slack_bot_token: str = ""
+    slack_channel_id: str = ""
+
     # Pipeline
     max_files: int = 150
     max_file_chars: int = 12_000
     state_path: str = ".docsync/state.json"
     extensions: set[str] = field(default_factory=lambda: set(SOURCE_EXTENSIONS))
+
+    @property
+    def slack_enabled(self) -> bool:
+        return bool(self.slack_bot_token and self.slack_channel_id)
 
     @property
     def owner_and_name(self) -> tuple[str, str]:
@@ -86,6 +94,8 @@ class Settings:
             github_mcp_url=os.getenv("GITHUB_MCP_URL", cls.github_mcp_url),
             notion_token=os.getenv("NOTION_TOKEN", ""),
             notion_root_page_id=os.getenv("NOTION_ROOT_PAGE_ID", ""),
+            slack_bot_token=os.getenv("SLACK_BOT_TOKEN", ""),
+            slack_channel_id=os.getenv("SLACK_CHANNEL_ID", ""),
             max_files=_int("DOCSYNC_MAX_FILES", cls.max_files),
             max_file_chars=_int("DOCSYNC_MAX_FILE_CHARS", cls.max_file_chars),
             state_path=os.getenv("DOCSYNC_STATE_PATH", cls.state_path),

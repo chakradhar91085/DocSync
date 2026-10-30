@@ -48,6 +48,21 @@ def server_connections(settings: Settings, servers: set[str]) -> dict[str, dict]
             # npx needs the normal environment (HOME, PATH, npm config), plus the token.
             "env": {**os.environ, "NOTION_TOKEN": settings.notion_token},
         }
+    if "slack" in servers:
+        if not (settings.slack_bot_token and settings.slack_channel_id):
+            raise MCPError("SLACK_BOT_TOKEN and SLACK_CHANNEL_ID must both be set")
+        connections["slack"] = {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "slack-mcp-server@1.3.0", "--transport", "stdio"],
+            "env": {
+                **os.environ,
+                "SLACK_MCP_XOXB_TOKEN": settings.slack_bot_token,
+                # Posting is off by default in this server; allow it for our one channel only.
+                "SLACK_MCP_ADD_MESSAGE_TOOL": settings.slack_channel_id,
+                "SLACK_MCP_LOG_LEVEL": "warn",
+            },
+        }
     return connections
 
 

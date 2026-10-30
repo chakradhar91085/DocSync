@@ -51,6 +51,8 @@ jobs:
           DOCSYNC_REF: ${{ github.sha }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_ROOT_PAGE_ID: ${{ secrets.NOTION_ROOT_PAGE_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}     # optional
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}       # optional
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.full }}" = "true" ]; then
             docsync -v run --full
