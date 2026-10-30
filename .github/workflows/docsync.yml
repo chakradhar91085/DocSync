@@ -1,0 +1,59 @@
+name: DocSync
+
+# Re-document the code on every push to main; run manually for a full rebuild.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Re-document every file"
+        type: boolean
+        default: true
+
+concurrency:
+  group: docsync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4   # the Notion MCP server runs via npx
+        with:
+          node-version: "22"
+
+      - run: pip install .
+
+      # Hash cache from previous runs, so unchanged files are never re-sent to the LLM.
+      - uses: actions/cache@v4
+        with:
+          path: .docsync
+          key: docsync-state-${{ github.run_id }}
+          restore-keys: docsync-state-
+
+      - name: Sync docs to Notion
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DOCSYNC_MODEL: ${{ vars.DOCSYNC_MODEL || 'nvidia/nemotron-3-super-120b-a12b:free' }}
+          GITHUB_TOKEN: ${{ secrets.DOCSYNC_GITHUB_TOKEN || github.token }}
+          DOCSYNC_REPO: ${{ github.repository }}
+          DOCSYNC_REF: ${{ github.sha }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_ROOT_PAGE_ID: ${{ secrets.NOTION_ROOT_PAGE_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.full }}" = "true" ]; then
+            docsync -v run --full
+          else
+            docsync -v run --commits "${{ join(github.event.commits.*.id, ',') }}"
+          fi
